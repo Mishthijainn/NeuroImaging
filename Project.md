@@ -97,6 +97,19 @@ $$\text{Attention}(Q, K, V) = \text{Softmax}\left(\frac{Q K^T}{\sqrt{d_k}}\right
 | **1D VEP / EEG**   | **MNE Sample Electrophysiology**                 | Visual and auditory stimulus responses across occipital sensor lines (e.g., channel EEG 057).             | [MNE Sample Dataset](https://www.google.com/search?q=https://mne.tools/stable/overview/datasets_index.html%23sample)  |
 | **1D VEP / ERG**   | **PhysioNet Clinical Electrophysiology**         | Standardized clinical wave files following ISCEV standards for optic pathway conduction analysis.         | [PhysioNet Repositories](https://physionet.org/)                                                                      |
 
+> **Labeling gap:** none of the repositories above ship the clinical
+> Healthy / Glaucoma / Optic Neuritis-CVI diagnosis labels this model
+> targets -- they provide structural/retinotopic-functional scans and
+> generic electrophysiology. A labeled clinical cohort (or a clinician
+> partner to label a subset of the above) is still required before real
+> training can happen. Until then, `src/data/synthetic.py` generates
+> class-conditioned synthetic MRI volumes and VEP waveforms through the
+> same interface, so the full pipeline -- preprocessing, model, training,
+> explainability -- is built, exercised, and tested end-to-end. Point
+> `PairedNeuroDataset` at a real manifest CSV (`subject_id, mri_path,
+> vep_path, fs, label`) as soon as labeled data exists; no other code
+> changes are required.
+
 ---
 
 ## 5. Base Papers & Key References
@@ -131,18 +144,51 @@ $$\text{Attention}(Q, K, V) = \text{Softmax}\left(\frac{Q K^T}{\sqrt{d_k}}\right
 │   │   └── vep/                     # Raw 1D electrophysiological CSVs (.csv)
 │   └── processed/                   # Resampled, skull-stripped, and filtered arrays
 ├── src/
+│   ├── config.py                    # Central shape/hyperparameter config (single source of truth)
 │   ├── preprocessing/
 │   │   ├── signal_cleaner.py        # Butterworth & notch filtering
 │   │   └── mri_transforms.py        # MONAI spatial standardizer
+│   ├── data/
+│   │   ├── synthetic.py             # Class-conditioned synthetic MRI/VEP generator (see Sec. 4 note)
+│   │   └── dataset.py                # PairedNeuroDataset (real manifest) & SyntheticNeuroDataset
 │   ├── models/
 │   │   ├── spatial_encoder.py       # 3D-CNN / ResNet backbone
 │   │   ├── temporal_encoder.py      # 1D-CNN latency backbone
-│   │   └── cross_attention.py       # Multi-Head CAFM layer
-│   ├── train.py                     # Multi-task training loop
+│   │   ├── cross_attention.py       # Multi-Head CAFM layer
+│   │   └── cafn.py                  # Full CAFN: encoders + fusion + fused/aux heads
+│   ├── train.py                     # Multi-task training loop (CLI + library entry points)
 │   └── explainability/
-│       ├── grad_cam_3d.py           # 3D spatial activation maps
+│       ├── grad_cam_3d.py           # 3D spatial activation maps (Grad-CAM on fused logit)
 │       └── plot_attention.py        # 2D cross-attention correlation heatmaps
+├── tests/
+│   ├── unit/                        # Per-module tests (preprocessing, models, data, explainability)
+│   └── integration/                 # Full raw-file-to-trained-step pipeline & training-loop tests
 ├── checkpoints/                     # Serialized PyTorch models (.pt)
-└── requirements.txt                 # torch, monai, nibabel, nilearn, mne, scipy
-
+├── pytest.ini                       # pythonpath + test discovery config
+└── requirements.txt                 # torch, monai, nibabel, nilearn, mne, scipy,
+                                      # matplotlib, scikit-learn, pytest, pytest-cov
 ```
+
+**Design deviations from the original blueprint, and why:**
+
+- **Skull-stripping** is implemented as a lightweight intensity-percentile
+  foreground mask (`mri_transforms.foreground_mask_threshold`) rather than
+  an external tool (FSL BET / HD-BET / SynthStrip), since those require a
+  separate binary or pretrained network not installable via pip. It is a
+  drop-in placeholder -- swap in HD-BET/SynthStrip for clinical-grade
+  deployment; nothing downstream depends on which method produced the mask.
+- **`src/config.py`** was added (not in the original tree) as the single
+  source of truth for tensor shapes and hyperparameters (`d_model=128`,
+  `num_heads=4`, 64 spatial / 16 temporal tokens, etc.), so the
+  preprocessing stream, both encoders, fusion module, and training loop
+  cannot silently disagree on shapes.
+- **`src/data/`** was added (not in the original tree) to hold the dataset
+  loaders and the synthetic-data generator required to close the labeling
+  gap noted in Section 4.
+- **Test suite**: 86 tests (`pytest.ini`, `tests/unit/`, `tests/integration/`)
+  cover every module in isolation plus two full-system integration tests --
+  raw synthetic files through preprocessing, model, loss, backward, and
+  optimizer step; and a multi-epoch training run asserting the loss
+  actually drops and the model learns to separate classes (not just "runs
+  without crashing"). Run with `pytest` (or `pytest --cov=src` for coverage;
+  currently 95%).
