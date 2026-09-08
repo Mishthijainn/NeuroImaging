@@ -1,0 +1,11 @@
+torch
+monai
+nibabel
+nilearn
+mne
+scipy
+numpy
+matplotlib
+scikit-learn
+pytest
+pytest-cov
